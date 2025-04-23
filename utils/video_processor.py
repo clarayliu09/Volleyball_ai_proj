@@ -153,6 +153,8 @@ class VideoProcessor:
             tuple: (frame number, frame data)
         """
         cap = cv2.VideoCapture(video_path)
+        # Set video capture properties for better quality
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)  # Increase buffer size
         frame_count = 0
 
         while cap.isOpened():
@@ -161,6 +163,8 @@ class VideoProcessor:
                 break
 
             if frame_count % frame_interval == 0:
+                # Convert to RGB for better quality
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 yield frame_count, frame
 
             frame_count += 1
@@ -220,13 +224,32 @@ class VideoProcessor:
             
         output_path = output_dir / output_filename
         
-        # Create video writer
+        # Create video writer with high quality settings
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
         
-        # Write frames
+        # Write frames with quality preservation
         for frame in annotated_frames:
-            out.write(frame)
+            # Convert back to BGR for saving
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            out.write(frame_bgr)
             
         out.release()
+        
+        # Use ffmpeg to ensure high quality output
+        try:
+            temp_path = output_path.with_suffix('.temp.mp4')
+            ffmpeg_path = os.path.expanduser('~/bin/ffmpeg')
+            subprocess.run([
+                ffmpeg_path, '-i', str(output_path),
+                '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
+                '-c:a', 'aac', '-b:a', '192k',
+                str(temp_path)
+            ], check=True)
+            temp_path.replace(output_path)
+        except Exception as e:
+            print(f"Warning: Could not optimize video with ffmpeg: {str(e)}")
+            # If ffmpeg fails, we'll still return the original video
+            print("Using original video without optimization")
+        
         return output_path

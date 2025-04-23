@@ -7,6 +7,13 @@ import cv2
 from PIL import Image
 import numpy as np
 import tempfile
+import shutil
+import openai
+from dotenv import load_dotenv
+import pandas as pd
+
+# Load environment variables
+load_dotenv()
 
 # Set page config
 st.set_page_config(page_title="Volleyball Serving Analysis",
@@ -14,33 +21,33 @@ st.set_page_config(page_title="Volleyball Serving Analysis",
                    layout="wide")
 
 # Initialize session state
-if 'metrics_list' not in st.session_state:
-    st.session_state.metrics_list = []
+if 'metrics' not in st.session_state:
+    st.session_state.metrics = []
 if 'current_frame' not in st.session_state:
     st.session_state.current_frame = None
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
-if 'analysis_prompt' not in st.session_state:
-    st.session_state.analysis_prompt = None
 if 'annotated_video_path' not in st.session_state:
     st.session_state.annotated_video_path = None
+if 'temp_video_path' not in st.session_state:
+    st.session_state.temp_video_path = None
+if 'analysis_prompt' not in st.session_state:
+    st.session_state.analysis_prompt = None
 
 # Initialize components
 video_processor = VideoProcessor()
 pose_analyzer = PoseAnalyzer()
 gpt_analyzer = GPTAnalyzer()
 
-# Check for OpenAI API key
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    st.warning(
-        "⚠️ OpenAI API key not found. The pose analysis will work, but AI feedback won't be available."
-    )
-    st.info("""To enable AI feedback:
-1. Create a `.env` file in the project root
-2. Add your OpenAI API key: `OPENAI_API_KEY=your_key_here`
-3. Restart the application""")
-    st.divider()
+# Sidebar for OpenAI API key
+with st.sidebar:
+    st.header("Settings")
+    api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    if api_key:
+        openai.api_key = api_key
+        st.success("API key configured!")
+    else:
+        st.warning("Please enter your OpenAI API key to get analysis.")
 
 # Title and description
 st.title("🏐 Volleyball Serving Analysis Assistant")
@@ -53,10 +60,9 @@ Upload a video or provide a YouTube URL to get started!
 input_method = st.radio("Choose input method:",
                         ("YouTube URL", "Upload Video"))
 
-
 # Process video function
 def process_video(video_path):
-    st.session_state.metrics_list = []
+    st.session_state.metrics = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -78,7 +84,7 @@ def process_video(video_path):
         # Analyze frame
         annotated_frame, metrics = pose_analyzer.analyze_frame(frame)
         if metrics["pose_detected"]:
-            st.session_state.metrics_list.append(metrics)
+            st.session_state.metrics.append(metrics)
         st.session_state.current_frame = annotated_frame
         annotated_frames.append(annotated_frame)
 
@@ -91,13 +97,21 @@ def process_video(video_path):
             video_path, annotated_frames)
 
     # Generate analysis prompt and result
-    if st.session_state.metrics_list:
+    if st.session_state.metrics:
         st.session_state.analysis_prompt = pose_analyzer.generate_analysis_prompt(
-            st.session_state.metrics_list)
-        if api_key:
-            st.session_state.analysis_result = gpt_analyzer.analyze_technique(
-                st.session_state.analysis_prompt)
-
+            st.session_state.metrics)
+        st.write("Debug: Analysis prompt generated")
+        
+        if openai.api_key:
+            try:
+                st.session_state.analysis_result = gpt_analyzer.analyze_technique(
+                    st.session_state.analysis_prompt)
+                st.write("Debug: Analysis result generated")
+            except Exception as e:
+                st.error(f"Error generating AI analysis: {str(e)}")
+                st.session_state.analysis_result = None
+        else:
+            st.warning("OpenAI API key not found. Skipping AI analysis.")
 
 # Handle input
 if input_method == "YouTube URL":
@@ -124,6 +138,7 @@ else:  # Upload Video
                                          suffix='.mp4') as tmp_file:
             tmp_file.write(uploaded_file.read())
             video_path = tmp_file.name
+            st.session_state.temp_video_path = video_path
 
         if st.button("Analyze"):
             process_video(video_path)
@@ -135,29 +150,49 @@ else:  # Upload Video
 
 # Display results
 if st.session_state.annotated_video_path is not None:
-    col1, col2 = st.columns(2)
-
+    st.subheader("🎥 Video Analysis")
+    
+    # Create two columns for video and analysis
+    col1, col2 = st.columns([1, 1])  # Equal width columns
+    
     with col1:
-        st.subheader("Pose Analysis")
         # Display the annotated video
         st.video(str(st.session_state.annotated_video_path))
-
+        
+        # Display frame metrics
+        st.subheader("📊 Frame Metrics")
+        if st.session_state.metrics:
+            metrics_df = pd.DataFrame(st.session_state.metrics)
+            st.dataframe(metrics_df)
+    
     with col2:
-        st.subheader("Metrics")
-        if st.session_state.metrics_list:
-            latest_metrics = st.session_state.metrics_list[-1]
-            st.write("Latest Frame Metrics:")
-            st.json(latest_metrics)
-
-if st.session_state.analysis_prompt:
-    st.subheader("📊 Comprehensive Motion Analysis")
-    with st.expander("View Detailed Analysis Metrics", expanded=True):
-        st.markdown(st.session_state.analysis_prompt)
-
-if st.session_state.analysis_result:
-    st.subheader("🤖 AI Technique Analysis")
-    if "error" in st.session_state.analysis_result and st.session_state.analysis_result[
-            "error"]:
-        st.error(st.session_state.analysis_result["error"])
-    elif st.session_state.analysis_result["analysis"]:
-        st.markdown(st.session_state.analysis_result["analysis"])
+        # Display analysis details
+        st.subheader("🔍 Analysis Details")
+        
+        # Debug information
+        st.write("Debug: Checking analysis state")
+        st.write(f"Analysis prompt exists: {st.session_state.analysis_prompt is not None}")
+        st.write(f"Analysis result exists: {st.session_state.analysis_result is not None}")
+        
+        if st.session_state.analysis_prompt:
+            with st.expander("View Analysis Prompt", expanded=True):
+                st.markdown("""
+                ### Analysis Prompt
+                This is the detailed prompt that will be sent to the AI for analysis:
+                """)
+                st.markdown("---")
+                st.markdown(st.session_state.analysis_prompt)
+        
+        # Display AI analysis results
+        if st.session_state.analysis_result:
+            st.subheader("🤖 AI Technique Analysis")
+            if "error" in st.session_state.analysis_result and st.session_state.analysis_result["error"]:
+                st.error(st.session_state.analysis_result["error"])
+            elif st.session_state.analysis_result["analysis"]:
+                st.markdown("### Coach's Feedback")
+                st.markdown("---")
+                st.markdown(st.session_state.analysis_result["analysis"])
+            else:
+                st.warning("No analysis available. Please check your OpenAI API key configuration.")
+        else:
+            st.warning("No analysis result available. Please check if the video contains a valid serve.")
